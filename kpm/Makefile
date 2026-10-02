@@ -1,77 +1,64 @@
 ifndef TARGET_COMPILE
-$(error TARGET_COMPILE is not set)
+$(error TARGET_COMPILE not set)
 endif
 
 ifndef KP_DIR
 KP_DIR := ../KernelPatch
 endif
 
-ifndef DRIVER_DIR
-DRIVER_DIR := ../rtl8812au
-endif
-
 CC := $(TARGET_COMPILE)gcc
-LD := $(TARGET_COMPILE)ld
-OBJCOPY := $(TARGET_COMPILE)objcopy
-READELF := $(TARGET_COMPILE)readelf
 
+# These are the include directories used by the current
+# KernelPatch demo-hello Makefile.
 INCLUDE_DIRS := \
 	. \
 	include \
-	$(KP_DIR)/kernel/include \
-	$(KP_DIR)/kernel/patch/include \
-	$(KP_DIR)/kernel/include/asm-generic \
-	$(KP_DIR)/kernel/arch/arm64/include \
-	$(KP_DIR)/kernel/tools/arch/arm64/include
+	patch/include \
+	linux/include \
+	linux/arch/arm64/include \
+	linux/tools/arch/arm64/include
 
 INCLUDE_FLAGS := \
-	$(foreach dir,$(INCLUDE_DIRS),-I$(dir))
+	$(foreach dir,$(INCLUDE_DIRS),-I$(KP_DIR)/kernel/$(dir))
 
 CFLAGS := \
 	-O2 \
 	-g \
 	-fno-builtin \
-	-fno-stack-protector \
-	-fno-asynchronous-unwind-tables \
-	-fno-unwind-tables \
+	-fno-PIC \
 	-fno-pic \
 	-fno-plt \
-	-mstrict-align \
+	-fno-stack-protector \
+	-fno-asynchronous-unwind-tables \
 	-ffreestanding \
 	$(INCLUDE_FLAGS)
 
-LDFLAGS := \
-	-r
-
 OBJS := \
 	main.o \
-	symbols.o \
-	compat.o
+	rtl8812au.o
 
 TARGET := rtl8812au.kpm
 
 all: $(TARGET)
 
 $(TARGET): $(OBJS)
-	$(CC) $(LDFLAGS) \
-		-o $@ \
-		$^
-	
-main.o: main.c
+	$(CC) -r -o $@ $^
+
+main.o: main.c include/rtl8812au_kpm.h
 	$(CC) $(CFLAGS) \
 		-Trtl8812au.lds \
-		-c $< \
-		-o $@
+		-c \
+		-O2 \
+		-o $@ \
+		$<
 
-symbols.o: symbols.c
+rtl8812au.o: rtl8812au.c include/rtl8812au_kpm.h
 	$(CC) $(CFLAGS) \
-		-c $< \
-		-o $@
-
-compat.o: compat.c
-	$(CC) $(CFLAGS) \
-		-c $< \
-		-o $@
+		-Trtl8812au.lds \
+		-c \
+		-O2 \
+		-o $@ \
+		$<
 
 clean:
 	rm -f \
