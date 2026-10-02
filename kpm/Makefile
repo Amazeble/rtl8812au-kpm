@@ -13,13 +13,14 @@ CC := $(TARGET_COMPILE)gcc
 INCLUDE_DIRS := \
 	. \
 	include \
-	patch/include \
-	linux/include \
-	linux/arch/arm64/include \
-	linux/tools/arch/arm64/include
+	$(KP_DIR)/kernel/include \
+	$(KP_DIR)/kernel/patch/include \
+	$(KP_DIR)/kernel/linux/include \
+	$(KP_DIR)/kernel/linux/arch/arm64/include \
+	$(KP_DIR)/kernel/linux/tools/arch/arm64/include
 
 INCLUDE_FLAGS := \
-	$(foreach dir,$(INCLUDE_DIRS),-I$(KP_DIR)/kernel/$(dir))
+	$(foreach dir,$(INCLUDE_DIRS),-I$(dir))
 
 CFLAGS := \
 	-O2 \
