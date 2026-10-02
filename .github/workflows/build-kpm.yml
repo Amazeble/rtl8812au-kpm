@@ -1,4 +1,4 @@
-name: Build RTL8812AU KPM
+name: Build rtl8812au KPM
 
 on:
   workflow_dispatch:
@@ -22,6 +22,7 @@ env:
   RTL_REPO: https://github.com/Amazeble/rtl8812au.git
   RTL_REF: v5.2.20
 
+  TOOLCHAIN_VERSION: 14.2.rel1
   TARGET_COMPILE: aarch64-none-elf-
 
 jobs:
@@ -31,17 +32,17 @@ jobs:
 
     steps:
       # ------------------------------------------------------------
-      # Checkout this KPM port
+      # Checkout this repository
       # ------------------------------------------------------------
 
-      - name: Checkout KPM port
+      - name: Checkout KPM project
         uses: actions/checkout@v4
 
       # ------------------------------------------------------------
-      # Dependencies
+      # Host dependencies
       # ------------------------------------------------------------
 
-      - name: Install dependencies
+      - name: Install build dependencies
         run: |
           set -eux
 
@@ -53,33 +54,54 @@ jobs:
             wget \
             xz-utils \
             file \
-            binutils
+            binutils \
+            ca-certificates
 
       # ------------------------------------------------------------
-      # ARM64 bare-metal compiler
+      # ARM64 bare-metal toolchain
+      #
+      # KernelPatch requires:
+      #
+      #   aarch64-none-elf-
+      #
+      # This is NOT the Android kernel Clang toolchain.
       # ------------------------------------------------------------
 
-      - name: Install ARM GNU Toolchain
+      - name: Install ARM64 KPM toolchain
         run: |
           set -eux
 
-          TOOLCHAIN_VERSION="14.2.rel1"
-
           TOOLCHAIN_URL="https://developer.arm.com/-/media/Files/downloads/gnu/${TOOLCHAIN_VERSION}/binrel/arm-gnu-toolchain-${TOOLCHAIN_VERSION}-x86_64-aarch64-none-elf.tar.xz"
 
-          wget -q \
+          ARCHIVE="$RUNNER_TEMP/aarch64-none-elf.tar.xz"
+          TOOLCHAIN_DIR="$RUNNER_TEMP/aarch64-none-elf"
+          TOOLCHAIN_BIN="$TOOLCHAIN_DIR/bin"
+
+          wget \
+            -q \
             "$TOOLCHAIN_URL" \
-            -O "$RUNNER_TEMP/aarch64-none-elf.tar.xz"
+            -O "$ARCHIVE"
 
-          mkdir -p \
-            "$RUNNER_TEMP/aarch64-none-elf"
+          rm -rf "$TOOLCHAIN_DIR"
+          mkdir -p "$TOOLCHAIN_DIR"
 
-          tar -xf \
-            "$RUNNER_TEMP/aarch64-none-elf.tar.xz" \
-            -C "$RUNNER_TEMP/aarch64-none-elf" \
+          tar \
+            -xf "$ARCHIVE" \
+            -C "$TOOLCHAIN_DIR" \
             --strip-components=1
 
-          echo "$RUNNER_TEMP/aarch64-none-elf/bin" >> "$GITHUB_PATH"
+          test -x "$TOOLCHAIN_BIN/aarch64-none-elf-gcc"
+          test -x "$TOOLCHAIN_BIN/aarch64-none-elf-ld"
+
+          # Make the toolchain available to subsequent steps.
+          echo "$TOOLCHAIN_BIN" >> "$GITHUB_PATH"
+
+          # Make it available immediately in this step too.
+          export PATH="$TOOLCHAIN_BIN:$PATH"
+
+          echo "Toolchain:"
+          command -v aarch64-none-elf-gcc
+          command -v aarch64-none-elf-ld
 
           aarch64-none-elf-gcc --version
           aarch64-none-elf-ld --version
@@ -100,10 +122,13 @@ jobs:
 
       - name: Record KernelPatch revision
         run: |
+          set -eux
+
+          echo "KernelPatch revision:"
           git -C KernelPatch rev-parse HEAD
 
       # ------------------------------------------------------------
-      # RTL8812AU
+      # RTL8812AU source
       # ------------------------------------------------------------
 
       - name: Checkout RTL8812AU
@@ -118,10 +143,18 @@ jobs:
 
       - name: Record RTL8812AU revision
         run: |
+          set -eux
+
+          echo "RTL8812AU revision:"
           git -C rtl8812au rev-parse HEAD
 
       # ------------------------------------------------------------
-      # Apply source patches
+      # Apply source-level KPM port patches
+      #
+      # IMPORTANT:
+      # These patches must contain the actual RTL8812AU -> KPM
+      # port. The workflow deliberately does not fabricate or
+      # silently stub driver functionality.
       # ------------------------------------------------------------
 
       - name: Apply RTL8812AU KPM patches
@@ -130,15 +163,18 @@ jobs:
 
           shopt -s nullglob
 
-          patches=(
-            patches/*.patch
-          )
+          patches=(patches/*.patch)
 
           if [ "${#patches[@]}" -eq 0 ]; then
-            echo "No RTL8812AU patches found."
+            echo "::warning::No RTL8812AU KPM patches were found."
+            echo "The KPM scaffold can still be tested, but this does"
+            echo "not constitute a functional RTL8812AU driver port."
           else
             for patch in "${patches[@]}"; do
+              echo
+              echo "========================================"
               echo "Applying: $patch"
+              echo "========================================"
 
               git -C rtl8812au apply \
                 --verbose \
@@ -147,47 +183,91 @@ jobs:
           fi
 
       # ------------------------------------------------------------
-      # Use KernelPatch's own KPM linker script
+      # Use KernelPatch's own KPM linker script.
+      #
+      # Current KernelPatch demo uses hello.lds.
       # ------------------------------------------------------------
 
-      - name: Install KernelPatch KPM linker script
+      - name: Install KernelPatch linker script
         run: |
           set -eux
 
           test -f \
             KernelPatch/kpms/demo-hello/hello.lds
 
+          mkdir -p kpm
+
           cp \
             KernelPatch/kpms/demo-hello/hello.lds \
             kpm/rtl8812au.lds
 
+          echo "Linker script:"
+          cat kpm/rtl8812au.lds
+
       # ------------------------------------------------------------
-      # Show build environment
+      # Verify KPM source tree
+      # ------------------------------------------------------------
+
+      - name: Verify KPM project
+        run: |
+          set -eux
+
+          test -f kpm/Makefile
+          test -f kpm/main.c
+
+          echo
+          echo "KPM files:"
+          find kpm \
+            -maxdepth 2 \
+            -type f \
+            -print \
+            | sort
+
+      # ------------------------------------------------------------
+      # Show complete build environment
       # ------------------------------------------------------------
 
       - name: Show build environment
         run: |
-          echo "KernelPatch:"
+          set -eux
+
+          echo "========================================"
+          echo "KernelPatch"
+          echo "========================================"
+
           git -C KernelPatch rev-parse HEAD
 
           echo
-          echo "RTL8812AU:"
+          echo "========================================"
+          echo "RTL8812AU"
+          echo "========================================"
+
           git -C rtl8812au rev-parse HEAD
 
           echo
-          echo "Compiler:"
+          echo "========================================"
+          echo "Compiler"
+          echo "========================================"
+
+          command -v aarch64-none-elf-gcc
           aarch64-none-elf-gcc --version
 
           echo
-          echo "Linker:"
+          echo "========================================"
+          echo "Linker"
+          echo "========================================"
+
+          command -v aarch64-none-elf-ld
           aarch64-none-elf-ld --version
 
-          echo
-          echo "KPM linker script:"
-          ls -l kpm/rtl8812au.lds
-
       # ------------------------------------------------------------
-      # Build the KPM
+      # Build KPM
+      #
+      # TARGET_COMPILE must include the trailing '-':
+      #
+      #   aarch64-none-elf-
+      #
+      # KernelPatch's own demo uses this same model.
       # ------------------------------------------------------------
 
       - name: Build RTL8812AU KPM
@@ -203,24 +283,65 @@ jobs:
             TARGET_COMPILE="$TARGET_COMPILE"
 
       # ------------------------------------------------------------
-      # Verify output
+      # Verify output exists
       # ------------------------------------------------------------
 
-      - name: Verify KPM
+      - name: Verify KPM output
         run: |
           set -eux
 
-          test -f \
+          test -f kpm/rtl8812au.kpm
+
+          echo
+          echo "KPM file:"
+          ls -lh kpm/rtl8812au.kpm
+
+          echo
+          echo "File type:"
+          file kpm/rtl8812au.kpm
+
+      # ------------------------------------------------------------
+      # Inspect ELF
+      # ------------------------------------------------------------
+
+      - name: Inspect KPM ELF
+        run: |
+          set -eux
+
+          echo "ELF header:"
+          aarch64-none-elf-readelf \
+            -h \
             kpm/rtl8812au.kpm
 
-          chmod +x \
-            scripts/verify-kpm.sh
+          echo
+          echo "Sections:"
+          aarch64-none-elf-readelf \
+            -S \
+            kpm/rtl8812au.kpm
+
+          echo
+          echo "Symbols:"
+          aarch64-none-elf-readelf \
+            -s \
+            kpm/rtl8812au.kpm \
+            || true
+
+      # ------------------------------------------------------------
+      # Optional project verification script
+      # ------------------------------------------------------------
+
+      - name: Run KPM verification script
+        if: ${{ hashFiles('scripts/verify-kpm.sh') != '' }}
+        run: |
+          set -eux
+
+          chmod +x scripts/verify-kpm.sh
 
           ./scripts/verify-kpm.sh \
             kpm/rtl8812au.kpm
 
       # ------------------------------------------------------------
-      # Generate checksum
+      # SHA256
       # ------------------------------------------------------------
 
       - name: Generate SHA256
@@ -234,7 +355,26 @@ jobs:
           cat rtl8812au.kpm.sha256
 
       # ------------------------------------------------------------
-      # Upload build artifact
+      # Package source/build information
+      # ------------------------------------------------------------
+
+      - name: Generate build information
+        run: |
+          set -eux
+
+          cat > rtl8812au.kpm.build-info.txt <<EOF
+          KPM name: rtl8812au
+          RTL8812AU revision: $(git -C rtl8812au rev-parse HEAD)
+          KernelPatch revision: $(git -C KernelPatch rev-parse HEAD)
+          Toolchain: ${TOOLCHAIN_VERSION}
+          Target compiler: ${TARGET_COMPILE}
+          Runner: ubuntu-24.04
+          EOF
+
+          cat rtl8812au.kpm.build-info.txt
+
+      # ------------------------------------------------------------
+      # Upload artifacts
       # ------------------------------------------------------------
 
       - name: Upload KPM artifact
@@ -245,3 +385,4 @@ jobs:
           path: |
             kpm/rtl8812au.kpm
             rtl8812au.kpm.sha256
+            rtl8812au.kpm.build-info.txt
