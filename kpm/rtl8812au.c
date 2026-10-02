@@ -1,29 +1,28 @@
 /*
  * SPDX-License-Identifier: GPL-2.0-or-later
  *
- * RTL8812AU KPM runtime.
+ * RTL8812AU KernelPatch runtime
+ *
+ * This file provides the KPM-side lifecycle and control runtime.
  *
  * IMPORTANT:
+ * This is NOT the RTL8812AU hardware driver yet.
  *
- * This file is deliberately NOT pretending that the ordinary
- * Linux 8812au driver can simply be compiled as a KPM.
+ * The original rtl8812au driver depends on substantial Linux
+ * kernel infrastructure:
  *
- * The original RTL8812AU driver depends heavily on Linux kernel
- * subsystems such as:
+ *   USB / URB
+ *   net_device
+ *   cfg80211 / mac80211
+ *   workqueues
+ *   timers
+ *   DMA
+ *   firmware loading
+ *   networking
+ *   Realtek HAL
  *
- *   - USB
- *   - URBs
- *   - net_device
- *   - cfg80211
- *   - mac80211
- *   - workqueues
- *   - timers
- *   - DMA
- *   - firmware loading
- *   - kernel networking
- *   - Realtek HAL/platform code
- *
- * A functional KPM port has to adapt those interfaces explicitly.
+ * Those interfaces must be ported explicitly before this KPM
+ * can operate an RTL8812AU adapter.
  */
 
 #include <compiler.h>
@@ -32,18 +31,43 @@
 #include <kpmalloc.h>
 #include <common.h>
 
-#include <linux/printk.h>
 #include <linux/string.h>
+#include <linux/printk.h>
 
 #include "rtl8812au_kpm.h"
 
 struct rtl8812au_kpm_state rtl8812au_state;
 
+
 /*
- * KPM-owned initialization.
+ * -------------------------------------------------------------------------
+ * Internal helpers
+ * -------------------------------------------------------------------------
  */
+
+static const char *rtl8812au_status_string(void)
+{
+    if (!rtl8812au_state.initialized)
+        return "rtl8812au-kpm: stopped";
+
+    if (!rtl8812au_state.driver_port_ready)
+        return "rtl8812au-kpm: initialized; driver port incomplete";
+
+    return "rtl8812au-kpm: driver ready";
+}
+
+
+/*
+ * -------------------------------------------------------------------------
+ * KPM initialization
+ * -------------------------------------------------------------------------
+ */
+
 int rtl8812au_kpm_init(void)
 {
+    /*
+     * Reset only KPM-owned state.
+     */
     memset(
         &rtl8812au_state,
         0,
@@ -51,8 +75,12 @@ int rtl8812au_kpm_init(void)
     );
 
     /*
-     * The KPM itself is alive, but the actual RTL8812AU
-     * Linux-driver port is not yet installed here.
+     * Mark the KPM runtime as initialized.
+     *
+     * driver_port_ready deliberately remains zero.
+     *
+     * Do NOT claim the RTL8812AU driver is operational until the
+     * actual USB/network/HAL port has been implemented.
      */
     rtl8812au_state.initialized = 1;
     rtl8812au_state.driver_port_ready = 0;
@@ -61,27 +89,40 @@ int rtl8812au_kpm_init(void)
         "rtl8812au-kpm: runtime initialized\n"
     );
 
-    pr_warn(
-        "rtl8812au-kpm: RTL8812AU hardware port is not "
-        "implemented yet\n"
+    pr_info(
+        "rtl8812au-kpm: hardware driver port is not yet installed\n"
     );
 
     return RTL8812AU_KPM_OK;
 }
 
+
 /*
- * KPM-owned cleanup.
+ * -------------------------------------------------------------------------
+ * KPM shutdown
+ * -------------------------------------------------------------------------
  */
+
 void rtl8812au_kpm_exit(void)
 {
     if (!rtl8812au_state.initialized)
         return;
 
     /*
-     * Once the actual driver port is implemented, this is where
-     * USB registration, network registration, workqueues,
-     * timers, firmware state, DMA resources, etc. must be
-     * released.
+     * When the real driver port is implemented, all resources must
+     * be released here before returning:
+     *
+     *   USB registrations
+     *   URBs
+     *   DMA mappings
+     *   workqueues
+     *   timers
+     *   firmware buffers
+     *   network device
+     *   cfg80211/mac80211 state
+     *   driver-private allocations
+     *
+     * Nothing is fabricated here.
      */
 
     rtl8812au_state.driver_port_ready = 0;
@@ -92,82 +133,77 @@ void rtl8812au_kpm_exit(void)
     );
 }
 
+
 /*
- * Simple ctl0 interface.
+ * -------------------------------------------------------------------------
+ * KPM control interface
+ * -------------------------------------------------------------------------
  *
- * Examples:
+ * Supported commands:
  *
  *   status
  *   version
  *
- * The response is copied to userspace using the official
- * KernelPatch compatibility API.
+ * Any other command returns a help message.
+ *
+ * This interface is deliberately independent of the RTL8812AU
+ * hardware until the actual driver port is implemented.
  */
+
 long rtl8812au_kpm_control(
     const char *args,
     char *__user out_msg,
     int outlen
 )
 {
-    char response[128];
-    const char *command;
+    const char *response;
+    int response_len;
+    int copy_len;
 
     if (!out_msg || outlen <= 0)
         return RTL8812AU_KPM_EINVAL;
 
-    memset(
-        response,
-        0,
-        sizeof(response)
-    );
+    /*
+     * status
+     */
+    if (args && !strcmp(args, "status")) {
 
-    command = args ? args : "";
-
-    if (!strcmp(command, "status")) {
-
-        /*
-         * Keep the response small and deterministic.
-         */
-        snprintf(
-            response,
-            sizeof(response),
-            "initialized=%d driver_port_ready=%d",
-            rtl8812au_state.initialized,
-            rtl8812au_state.driver_port_ready
-        );
-
-    } else if (!strcmp(command, "version")) {
-
-        snprintf(
-            response,
-            sizeof(response),
-            "rtl8812au-kpm 5.2.20-kpm0"
-        );
-
-    } else {
-
-        snprintf(
-            response,
-            sizeof(response),
-            "rtl8812au-kpm: unsupported command"
-        );
-    }
+        response = rtl8812au_status_string();
 
     /*
-     * Never copy more than the user's supplied buffer.
+     * version
      */
-    {
-        int len = (int)strlen(response) + 1;
+    } else if (args && !strcmp(args, "version")) {
 
-        if (len > outlen)
-            len = outlen;
+        response =
+            "rtl8812au-kpm: version 5.2.20-kpm0";
 
-        compat_copy_to_user(
-            out_msg,
-            response,
-            len
-        );
+    /*
+     * help / empty / unknown command
+     */
+    } else {
+
+        response =
+            "rtl8812au-kpm: commands: status, version";
     }
 
-    return RTL8812AU_KPM_OK;
+    response_len = (int)strlen(response) + 1;
+
+    /*
+     * Do not write beyond the caller's supplied buffer.
+     */
+    copy_len = response_len;
+
+    if (copy_len > outlen)
+        copy_len = outlen;
+
+    /*
+     * KernelPatch provides compat_copy_to_user() for the KPM
+     * userspace control interface.
+     */
+    return compat_copy_to_user(
+        out_msg,
+        response,
+        copy_len
+    );
 }
